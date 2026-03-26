@@ -1,11 +1,11 @@
 ;;; project-view.el --- Project visualization buffer with Git status -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 Simon Watson
+;; Copyright (C) 2026  Simon
 ;; SPDX-License-Identifier: MIT
 
-;; Author: Simon Watson (with assistance from Grok)
+;; Author: Simon (with assistance from Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 0.5
+;; Version: 0.6
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -26,8 +26,7 @@
 ;; • Commit column: `vc-dir-status-ignored'
 ;; • Remote column: `vc-dir-file'
 ;; • Full RET / mouse-1 support to switch projects via `project-switch-project'
-;; • Depends only on built-in Emacs packages (project, vc, vtable, cl-lib)
-;; • Robust path matching with file-in-directory-p (no more empty-table bugs)
+;; • Robust path matching with file-in-directory-p + extra debug output
 
 ;;; Code:
 
@@ -113,15 +112,13 @@ EXPECTED OUTPUT / ACTION:
           DIRS))
 
 (defun project-view/get-grouped-projects ()
-  "Group all known projects by their workspace directories (robust version).
+  "Group all known projects by their workspace directories (debug version 0.6).
 
 INPUT VARIABLES:
   None.
 
 EXPECTED OUTPUT / ACTION:
-  Returns a cons cell (PROJECT-GROUPS . UNGROUPED-PROJECTS) where PROJECT-GROUPS
-  is a hash table (keys = workspace original paths, values = sorted project pairs)
-  and UNGROUPED-PROJECTS is a sorted list of projects that belong to no workspace."
+  Returns a cons cell (PROJECT-GROUPS . UNGROUPED-PROJECTS)."
   (unless (boundp 'my-project/workspace-list)
     (ignore-errors (my-project/load-workspace-directories)))
   (let* ((workspaces-orig (when (boundp 'my-project/workspace-list)
@@ -132,18 +129,20 @@ EXPECTED OUTPUT / ACTION:
          (project-pairs   (project-view/get-canonical-pairs (or projects-orig '())))
          (project-groups (make-hash-table :test 'equal))
          (ungrouped-projects nil))
+    (message "project-view: Found %d workspaces and %d projects" 
+             (length workspaces-orig) (length projects-orig))
     (unless (or workspaces-orig projects-orig)
       (user-error "No workspaces or projects available to display"))
-    ;; Initialise hash table for each workspace
     (dolist (ws-orig workspaces-orig)
       (puthash ws-orig nil project-groups))
-    ;; Assign each project to the deepest matching workspace
     (dolist (proj-pair project-pairs)
       (let* ((proj-canon (cdr proj-pair))
              (matching-ws nil))
         (dolist (ws-pair workspace-pairs)
           (when (file-in-directory-p proj-canon (cdr ws-pair))
-            (push ws-pair matching-ws)))
+            (push ws-pair matching-ws)
+            (message "  → Matched project %s to workspace %s" 
+                     (car proj-pair) (car ws-pair))))
         (if matching-ws
             (let* ((best-ws-pair (car (sort matching-ws
                                             (lambda (a b)
@@ -153,7 +152,6 @@ EXPECTED OUTPUT / ACTION:
                        (cons proj-pair (gethash best-ws-orig project-groups))
                        project-groups))
           (push proj-pair ungrouped-projects))))
-    ;; Sort groups and ungrouped list
     (dolist (ws-orig workspaces-orig)
       (puthash ws-orig (sort (gethash ws-orig project-groups)
                              (lambda (a b) (string< (car a) (car b))))
@@ -170,7 +168,7 @@ INPUT VARIABLES:
 
 EXPECTED OUTPUT / ACTION:
   Returns a plist (:backend :branch :status :upstream :commit :remote :stash)
-  or nil if the directory is not a Git repository (or has no VC backend at all)."
+  or nil if the directory is not a Git repository."
   (let ((default-directory (file-truename (expand-file-name DIR))))
     (when (eq (vc-responsible-backend default-directory t) 'Git)
       (condition-case nil
@@ -212,8 +210,7 @@ INPUT VARIABLES:
   WORKSPACE-NAME (string) - Basename of the parent workspace (or \"Other\").
 
 EXPECTED OUTPUT / ACTION:
-  Returns a plist suitable as a row for `make-vtable' with keys
-  :original, :canonical, :workspace-name, and :info."
+  Returns a plist suitable as a row for `make-vtable'."
   (let ((orig (car PROJ-PAIR))
         (canon (cdr PROJ-PAIR)))
     (list :original orig
@@ -222,34 +219,22 @@ EXPECTED OUTPUT / ACTION:
           :info (project-view/git-repo-info canon))))
 
 (defun project-view--vtable-getter (ROW COLUMN VTABLE)
-  "Extract column value from ROW and apply requested VC faces.
-
-INPUT VARIABLES:
-  ROW    (plist) - Row data created by `project-view--make-row'.
-  COLUMN (integer) - Column index in the vtable.
-  VTABLE (vtable) - The vtable object (used to obtain column name).
-
-EXPECTED OUTPUT / ACTION:
-  Returns a propertized string for display in the vtable cell."
+  "Extract column value from ROW and apply requested VC faces."
   (let ((info (plist-get ROW :info))
         (col-name (vtable-column VTABLE COLUMN)))
     (pcase col-name
       ("Workspace"
        (propertize (or (plist-get ROW :workspace-name) "Other") 'face 'vc-state-base))
-
       ("Path"
        (propertize (format "  %s" (project-view/format-path (plist-get ROW :original)))
                    'face 'vc-state-base
                    'mouse-face 'embark-target))
-
       ("Backend"
        (let ((backend (if info (or (plist-get info :backend) "-") "-")))
          (propertize (if (symbolp backend) (symbol-name backend) backend)
                      'face 'vc-state-base)))
-
       ("Branch"
        (propertize (if info (or (plist-get info :branch) "no commits") "-") 'face 'vc-state-base))
-
       ("Status"
        (let* ((status (if info (or (plist-get info :status) "-") "-"))
               (face (pcase status
@@ -257,47 +242,29 @@ EXPECTED OUTPUT / ACTION:
                       ("dirty" 'vc-needs-update-state)
                       (_ 'vc-state-base))))
          (propertize status 'face face)))
-
       ("Upstream"
        (let ((val (if info (or (plist-get info :upstream) "none") "none")))
          (propertize val 'face (if (string= val "none") 'warning 'vc-state-base))))
-
       ("Commit"
        (propertize (if info (or (plist-get info :commit) "no commits") "-")
                    'face 'vc-dir-status-ignored))
-
       ("Remote"
        (propertize (if info
                        (project-view/format-remote (or (plist-get info :remote) "no remote"))
                      "-")
                    'face 'vc-dir-file))
-
       ("Stash"
        (propertize (if info (or (plist-get info :stash) "Nothing stashed") "-")
                    'face 'vc-state-base))
-
       (_ (propertize "-" 'face 'vc-state-base)))))
 
 (defun project-view--switch-to-project (ROW)
-  "Switch Emacs to the project represented by ROW.
-
-INPUT VARIABLES:
-  ROW (plist) - Row data containing the :canonical project path.
-
-EXPECTED OUTPUT / ACTION:
-  Calls `project-switch-project' with the canonical path (no return value)."
+  "Switch Emacs to the project represented by ROW."
   (when-let ((path (plist-get ROW :canonical)))
     (project-switch-project path)))
 
 (define-derived-mode project-view-mode special-mode "Project View"
-  "Major mode for the *Project View* buffer.
-
-INPUT VARIABLES:
-  None (standard `define-derived-mode' invocation).
-
-EXPECTED OUTPUT / ACTION:
-  Sets up buffer-local faces, header-line, read-only state and truncation.
-  All text defaults to `vc-state-base'."
+  "Major mode for the *Project View* buffer."
   :group 'project-view
   (buffer-face-set 'vc-state-base)
   (setq header-line-format (propertize " Project View" 'face 'vc-state-base))
@@ -306,25 +273,16 @@ EXPECTED OUTPUT / ACTION:
 
 ;;;###autoload
 (defun project-view ()
-  "Display all projects in the *Project View* buffer using a single vtable.
-
-INPUT VARIABLES:
-  None (interactive command).
-
-EXPECTED OUTPUT / ACTION:
-  Creates or re-uses the *Project View* buffer, populates it with a vtable,
-  activates `project-view-mode', and switches to the buffer."
+  "Display all projects in the *Project View* buffer using a single vtable."
   (interactive)
   (let* ((grouped (project-view/get-grouped-projects))
          (project-groups (car grouped))
          (ungrouped-projects (cdr grouped))
          (all-rows nil))
-    ;; Grouped workspaces
     (dolist (ws-orig (sort (hash-table-keys project-groups) #'string<))
       (let ((workspace-name (file-name-nondirectory (directory-file-name ws-orig))))
         (dolist (proj-pair (gethash ws-orig project-groups))
           (push (project-view--make-row proj-pair workspace-name) all-rows))))
-    ;; Ungrouped projects
     (dolist (proj-pair ungrouped-projects)
       (push (project-view--make-row proj-pair "Other") all-rows))
     (setq all-rows (nreverse all-rows))
@@ -340,9 +298,8 @@ EXPECTED OUTPUT / ACTION:
            :use-header-line t
            :actions '("RET" project-view--switch-to-project
                       "<mouse-1>" project-view--switch-to-project))
-        ;; Friendly message when truly empty
-        (insert (propertize "\n  No projects found.\n\n" 'face 'warning)
-                "Run M-x my-project/scan-workspaces or M-x project-remember-projects-under first.\n"))
+        (insert (propertize "\n  No projects found in any workspace.\n\n" 'face 'warning)
+                "Check the *Messages* buffer for debug output.\n"))
       (goto-char (point-min))
       (switch-to-buffer (current-buffer)))))
 
