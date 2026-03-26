@@ -1,11 +1,11 @@
 ;;; project-view.el --- Project visualization buffer with Git status -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026  Simon Watson
+;; Copyright (C) 2026 Simon Watson
 ;; SPDX-License-Identifier: MIT
 
 ;; Author: Simon Watson (with assistance from Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 0.4
+;; Version: 0.5
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -27,7 +27,7 @@
 ;; • Remote column: `vc-dir-file'
 ;; • Full RET / mouse-1 support to switch projects via `project-switch-project'
 ;; • Depends only on built-in Emacs packages (project, vc, vtable, cl-lib)
-;; • Robust handling of non-VC projects (no more errors)
+;; • Robust path matching with file-in-directory-p (no more empty-table bugs)
 
 ;;; Code:
 
@@ -113,7 +113,7 @@ EXPECTED OUTPUT / ACTION:
           DIRS))
 
 (defun project-view/get-grouped-projects ()
-  "Group all known projects by their workspace directories.
+  "Group all known projects by their workspace directories (robust version).
 
 INPUT VARIABLES:
   None.
@@ -122,39 +122,38 @@ EXPECTED OUTPUT / ACTION:
   Returns a cons cell (PROJECT-GROUPS . UNGROUPED-PROJECTS) where PROJECT-GROUPS
   is a hash table (keys = workspace original paths, values = sorted project pairs)
   and UNGROUPED-PROJECTS is a sorted list of projects that belong to no workspace."
-  (let* ((workspaces-orig (progn
-                            (unless (boundp 'my-project/workspace-list)
-                              (ignore-errors (my-project/load-workspace-directories)))
-                            (when (boundp 'my-project/workspace-list)
-                              (mapcar #'car my-project/workspace-list))))
+  (unless (boundp 'my-project/workspace-list)
+    (ignore-errors (my-project/load-workspace-directories)))
+  (let* ((workspaces-orig (when (boundp 'my-project/workspace-list)
+                            (mapcar #'car my-project/workspace-list)))
          (projects-orig (when (boundp 'project--list)
                           (mapcar #'car project--list)))
-         (workspace-pairs
-          (project-view/get-canonical-pairs (or workspaces-orig '())))
-         (project-pairs
-          (project-view/get-canonical-pairs (or projects-orig '())))
+         (workspace-pairs (project-view/get-canonical-pairs (or workspaces-orig '())))
+         (project-pairs   (project-view/get-canonical-pairs (or projects-orig '())))
          (project-groups (make-hash-table :test 'equal))
          (ungrouped-projects nil))
     (unless (or workspaces-orig projects-orig)
       (user-error "No workspaces or projects available to display"))
+    ;; Initialise hash table for each workspace
     (dolist (ws-orig workspaces-orig)
       (puthash ws-orig nil project-groups))
+    ;; Assign each project to the deepest matching workspace
     (dolist (proj-pair project-pairs)
       (let* ((proj-canon (cdr proj-pair))
              (matching-ws nil))
         (dolist (ws-pair workspace-pairs)
-          (when (string-prefix-p (cdr ws-pair) proj-canon)
+          (when (file-in-directory-p proj-canon (cdr ws-pair))
             (push ws-pair matching-ws)))
         (if matching-ws
-            (let* ((best-ws-pair (car
-                                  (sort matching-ws
-                                        (lambda (a b) (> (length (cdr a))
-                                                         (length (cdr b)))))))
+            (let* ((best-ws-pair (car (sort matching-ws
+                                            (lambda (a b)
+                                              (> (length (cdr a)) (length (cdr b)))))))
                    (best-ws-orig (car best-ws-pair)))
               (puthash best-ws-orig
                        (cons proj-pair (gethash best-ws-orig project-groups))
                        project-groups))
           (push proj-pair ungrouped-projects))))
+    ;; Sort groups and ungrouped list
     (dolist (ws-orig workspaces-orig)
       (puthash ws-orig (sort (gethash ws-orig project-groups)
                              (lambda (a b) (string< (car a) (car b))))
@@ -333,13 +332,17 @@ EXPECTED OUTPUT / ACTION:
       (let ((inhibit-read-only t))
         (erase-buffer))
       (project-view-mode)
-      (make-vtable
-       :columns project-view/vtable-columns
-       :objects all-rows
-       :getter #'project-view--vtable-getter
-       :use-header-line t
-       :actions '("RET" project-view--switch-to-project
-                  "<mouse-1>" project-view--switch-to-project))
+      (if all-rows
+          (make-vtable
+           :columns project-view/vtable-columns
+           :objects all-rows
+           :getter #'project-view--vtable-getter
+           :use-header-line t
+           :actions '("RET" project-view--switch-to-project
+                      "<mouse-1>" project-view--switch-to-project))
+        ;; Friendly message when truly empty
+        (insert (propertize "\n  No projects found.\n\n" 'face 'warning)
+                "Run M-x my-project/scan-workspaces or M-x project-remember-projects-under first.\n"))
       (goto-char (point-min))
       (switch-to-buffer (current-buffer)))))
 
