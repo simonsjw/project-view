@@ -1,8 +1,8 @@
-# project-view — Enhanced Project Visualization for Emacs
+# project-view — Enhanced Project Visualisation for Emacs
 
 **A clean, single-table project browser with rich VC/Git status and VC faces.**
 
-`project-view` displays *all* Emacs projects (from `project--list`) in one navigable vtable inside the dedicated buffer `*Project View*`. It groups projects by workspace (using the existing `my-project/workspace-list` from `project-support.el`), shows the workspace basename as the first column, and applies the exact face styling you requested.
+`project-view` displays *all* Emacs projects (from `project--list`) in one navigable vtable inside the dedicated buffer `*Project View*`.  It groups projects by workspace (using the existing `my-project/workspace-list` from `project-support.el`), shows the workspace basename as the first column, and applies the exact face styling requested.
 
 ---
 
@@ -15,7 +15,7 @@
   - Entire buffer defaults to `vc-state-base`.
   - Header line uses `vc-state-base`.
   - **Path** column: `mouse-face` = `embark-target`.
-  - **Status** column: `clean` → `vc-dir-up-to-date-state`, `dirty` → `vc-needs-update-state`.
+  - **Status** column: `clean` → `vc-up-to-date-state`, `dirty` → `vc-needs-update-state`.
   - **Upstream** column: `none` highlighted with `warning` face (orange in most themes).
   - **Commit** column: `vc-dir-status-ignored`.
   - **Remote** column: `vc-dir-file`.
@@ -56,9 +56,9 @@ The table is rebuilt fresh each time the command runs, so new projects added via
 
 ---
 
-## Customization
+## Customisation
 
-All variables are in the `project-view` customization group.
+All variables are in the `project-view` customisation group.
 
 ```elisp
 M-x customize-group RET project-view RET
@@ -71,7 +71,7 @@ M-x customize-group RET project-view RET
 | `project-view/format-max-path-length`   | 60      | Truncation limit for the Path column   |
 | `project-view/format-max-remote-length` | 50      | Truncation limit for the Remote column |
 
-Column widths are defined in `project-view/column-widths` (a plist). You may override it after loading the package if you prefer different sizing.
+Column widths are defined in `project-view/column-widths` (a plist).  You may override it after loading the package if you prefer different sizing.
 
 ---
 
@@ -107,7 +107,3 @@ Copyright © 2026 Simon Watson
 
 - Original workspace and project logic: Simon Watson
 - Refactored and documented by Grok (March 2026)
-
-```
-
----
