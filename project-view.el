@@ -1,11 +1,11 @@
 ;;; project-view.el --- Project visualization buffer with Git status -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 Simon Watson
+;; Copyright (C) 2026  Simon Watson
 ;; SPDX-License-Identifier: MIT
 
-;; Author: Simon Watson (with Grok)
+;; Author: Simon Watson (with assistance from Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 0.3
+;; Version: 0.4
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -21,7 +21,7 @@
 ;; • Workspace name as the first column (basename of the parent directory)
 ;; • All text defaults to `vc-state-base'
 ;; • Path column: mouse-face `embark-target'
-;; • Status column: clean → `vc-dir-up-to-date-state', dirty → `vc-needs-update-state'
+;; • Status column: clean → `vc-up-to-date-state', dirty → `vc-needs-update-state'
 ;; • Upstream column: "none" coloured with `warning' face (orange in most themes)
 ;; • Commit column: `vc-dir-status-ignored'
 ;; • Remote column: `vc-dir-file'
@@ -244,7 +244,9 @@ EXPECTED OUTPUT / ACTION:
                    'mouse-face 'embark-target))
 
       ("Backend"
-       (propertize (if info (or (plist-get info :backend) "-") "-") 'face 'vc-state-base))
+       (let ((backend (if info (or (plist-get info :backend) "-") "-")))
+         (propertize (if (symbolp backend) (symbol-name backend) backend)
+                     'face 'vc-state-base)))
 
       ("Branch"
        (propertize (if info (or (plist-get info :branch) "no commits") "-") 'face 'vc-state-base))
@@ -252,7 +254,7 @@ EXPECTED OUTPUT / ACTION:
       ("Status"
        (let* ((status (if info (or (plist-get info :status) "-") "-"))
               (face (pcase status
-                      ("clean" 'vc-dir-up-to-date-state)
+                      ("clean" 'vc-up-to-date-state)
                       ("dirty" 'vc-needs-update-state)
                       (_ 'vc-state-base))))
          (propertize status 'face face)))
