@@ -2,7 +2,7 @@
 
 **A clean, single-table project browser with rich VC/Git status and VC faces.**
 
-`project-view` displays *all* Emacs projects (from `project--list`) in one navigable vtable inside the dedicated buffer `*Project View*`.  It groups projects by workspace (using the existing `my-project/workspace-list` from `project-support.el`), shows the workspace basename as the first column, and applies the exact face styling requested.
+`project-view` displays *all* Emacs projects (from `project--list`) in one navigable vtable inside the dedicated buffer `*Project View*`.  It groups projects by workspace using a new variable  `project-view/workspace-list` and shows the workspace basename as the first column.
 
 ---
 
@@ -84,14 +84,13 @@ Column widths are defined in `project-view/column-widths` (a plist).  You may ov
   - `vtable`
   - `cl-lib`
 
-No external packages required.
+Built in emacs package project.el is assumed to be present along with variable `project--list`.
 
 ---
 
-## Integration with `project-support.el`
+## Integration with `project.el`
 
-`project-view` re-uses the workspace list managed by your existing `project-support.el` (`my-project/workspace-list`).
-If you have not yet loaded `project-support.el`, the package will gracefully fall back to showing only projects from `project--list` (ungrouped under “Other”).
+`project-view` uses the project list `project--list` from package.el to store projects. If these have been generated in package.el or otherwise outside of the project-view workspace machanism, they are included in the project-view in workspace `other`.
 
 ---
 
