@@ -3,9 +3,9 @@
 ;; Copyright (C) 2026 Simon Watson
 ;; SPDX-License-Identifier: MIT
 
-;; Author: Simon Watson
+;; Author: Simon Watson (with Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 0.2
+;; Version: 0.3
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -27,6 +27,7 @@
 ;; • Remote column: `vc-dir-file'
 ;; • Full RET / mouse-1 support to switch projects via `project-switch-project'
 ;; • Depends only on built-in Emacs packages (project, vc, vtable, cl-lib)
+;; • Robust handling of non-VC projects (no more errors)
 
 ;;; Code:
 
@@ -170,9 +171,9 @@ INPUT VARIABLES:
 
 EXPECTED OUTPUT / ACTION:
   Returns a plist (:backend :branch :status :upstream :commit :remote :stash)
-  or nil if the directory is not a Git repository."
+  or nil if the directory is not a Git repository (or has no VC backend at all)."
   (let ((default-directory (file-truename (expand-file-name DIR))))
-    (when (eq (vc-responsible-backend default-directory) 'Git)
+    (when (eq (vc-responsible-backend default-directory t) 'Git)
       (condition-case nil
           (let* ((branch
                   (string-trim
