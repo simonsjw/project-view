@@ -66,10 +66,12 @@ M-x customize-group RET project-view RET
 
 ### Available options
 
-| Variable                                | Default | Description                            |
-|-----------------------------------------|---------|----------------------------------------|
-| `project-view/format-max-path-length`   | 60      | Truncation limit for the Path column   |
-| `project-view/format-max-remote-length` | 50      | Truncation limit for the Remote column |
+| Variable                                | Default           | Description                                         |
+|-----------------------------------------|-------------------|-----------------------------------------------------|
+| `project-view/format-max-path-length`   | 60                | Truncation limit for the Path column                |
+| `project-view/format-max-remote-length` | 50                | Truncation limit for the Remote column              |
+| `project-view/buffer-name`              | \*Project View\*  | The name of the buffer which displays project-view. |
+| `project-view/workspace-list-file`      | workspace-list.el | The location of the workspace list on disk.         |
 
 Column widths are defined in `project-view/column-widths` (a plist).  You may override it after loading the package if you prefer different sizing.
 
