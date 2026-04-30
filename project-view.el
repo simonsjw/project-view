@@ -13,19 +13,12 @@
 ;;; Commentary:
 
 ;; This package provides `project-view-mode' and the command `project-view'
-;; which displays all Emacs projects (from `project--list') in a single,
-;; richly formatted vtable.  It groups projects by workspace directories
-;; (from `project-view/workspace-list' if present).
+;; which displays projects from `project--list' (or on-disk discovery as fallback)
+;; grouped by your `project-view/workspace-list' directories.
 ;;
-;; Also provided are a set of functions to create and manage `work-spaces'
-;; - directories in which projects are grouped on disk.
-;;
-;; The projects clustered here are integrated with those present in project.el
-;; variable `project--list'.  Any projects present in `project-list' which
-;; are were not found using the mechanism in project-view are assigned to
-;; workspace `other'.  Thus this package fully integrates with standard
-;; package.el mechanics.  This means that the package is also dependent on the
-;; implementation of `project--list' in the existing Emacs setup.
+;; Grouping uses robust multi-strategy canonical path comparison to handle
+;; ~/ vs /home/simon, symlinks, etc.  This fixes the long-standing "Other" issue
+;; while still preferring the standard Emacs `project--list'.
 
 ;;; Code:
 
@@ -69,16 +62,14 @@ This variable may be set by the user before this package is loaded
   "When non-nil, enable extra debug messages in `project-view' functions.")
 
 (defvar project-view/column-widths
-  '(:workspace 26 :path 58  :branch 15 :status 8 :upstream 18
-               :commit 12 :remote 50 :stash 18 :backend 8)
+  '(:project 48 :branch 15 :status 8 :upstream 18
+             :commit 12 :remote 50 :stash 18 :backend 8)
   "Plist of column widths for the project vtable display.")
 
 (defvar project-view/vtable-columns
   (list
-   (list :name "Workspace" :width
-         (plist-get project-view/column-widths :workspace) :align 'left)
-   (list :name "Path"      :width
-         (plist-get project-view/column-widths :path) :align 'left)
+   (list :name "Project"   :width
+         (plist-get project-view/column-widths :project) :align 'left)
    (list :name "Branch"    :width
          (plist-get project-view/column-widths :branch))
    (list :name "Status"    :width
@@ -127,15 +118,21 @@ This variable may be set by the user before this package is loaded
 ;; and save changes to disk.
 
 
-(defun project-view/load-workspace-directories ()
-  "Load `project-view/workspace-list' from the stored file."
-  (let* ((workspaces-file project-view/workspace-list-file)
-         (workspaces-list (when (file-exists-p workspaces-file)
-                            (with-temp-buffer
-                              (insert-file-contents workspaces-file)
-                              (read (current-buffer))))))
 
-    (setq project-view/workspace-list workspaces-list)))
+(defun project-view/load-workspace-directories ()
+  "Load `project-view/workspace-list' from the stored file.
+Robustly handles missing/invalid files by leaving the variable unchanged."
+  (let ((workspaces-file project-view/workspace-list-file))
+    (when (file-exists-p workspaces-file)
+      (condition-case err
+          (let ((workspaces-list
+                 (with-temp-buffer
+                   (insert-file-contents workspaces-file)
+                   (read (current-buffer)))))
+            (when (listp workspaces-list)
+              (setq project-view/workspace-list workspaces-list)))
+        (error
+         (message "project-view: Failed to load workspace-list.el: %S" err))))))
 
 
 (defun project-view/scan-workspaces ()
@@ -147,10 +144,7 @@ recursively for projects."
 
   (mapc (lambda (parent-dir)
           (let ((absolute-parent-dir (file-truename (car parent-dir))))
-            ;; Process the directory string here.
-            (log/info :fn 'project-view/scan-workspaces
-                      :msg "Scanning directory:"
-                      :obj absolute-parent-dir)
+            (message "Scanning directory: %s" absolute-parent-dir)
             (project-remember-projects-under absolute-parent-dir 1)))
         project-view/workspace-list))
 
@@ -176,8 +170,8 @@ The file uses Emacs' project list format."
   "Remove DIR from `project-view/workspace-list'."
   (interactive "sDirectory to remove: ")
   (let ((expanded-dir (expand-file-name dir)))
-    (setq project-view/workspace-directories
-          (remove (list expanded-dir) project-view/workspace-directories))
+    (setq project-view/workspace-list
+          (remove (list expanded-dir) project-view/workspace-list))
     (project-view/save-workspace-directories)
     (message "Removed workspace directory: %s" expanded-dir)))
 
@@ -216,6 +210,21 @@ EXPECTED OUTPUT / ACTION:
           REMOTE
         (concat (substring REMOTE 0 20) "..." (substring REMOTE (- l 35) l))))))
 
+(defun project-view/format-project-display (WS PROJ-NAME)
+  "Format WS: PROJ-NAME for the Project column, with truncation if necessary.
+
+INPUT VARIABLES:
+  WS (string) - Workspace basename (e.g. \"workspace\" or \"Other\").
+  PROJ-NAME (string) - Project folder name.
+
+EXPECTED OUTPUT / ACTION:
+  Returns a possibly truncated string suitable for the Project column."
+  (let* ((s (format "%s: %s" WS PROJ-NAME))
+         (max project-view/format-max-path-length))
+    (if (<= (length s) max)
+        s
+      (concat (substring s 0 18) " … " (substring s (- (length s) 35))))))
+
 (defun project-view--get-canonical-pairs (DIRS)
   "Return list of (original . canonical) pairs for DIRS.
 
@@ -231,32 +240,74 @@ EXPECTED OUTPUT / ACTION:
           DIRS))
 
 (defun project-view--ensure-workspace-list ()
-  "Ensure `project-view/workspace-list' is loaded if the support file exists.
+  "Ensure `project-view/workspace-list' is loaded from the persistent file if it exists.
+This always refreshes from disk so that add/remove-workspace-directory changes
+and manual edits to the file are picked up reliably."
+  (when (and (boundp 'project-view/workspace-list-file)
+             (stringp project-view/workspace-list-file)
+             (file-exists-p project-view/workspace-list-file))
+    (condition-case err
+        (project-view/load-workspace-directories)
+      (error
+       (when project-view-debug
+         (message "project-view: ensure error: %S" err))))))
 
-INPUT VARIABLES:
-  None.
+;; ensure workspaces are loaded even if view is not active. 
+(project-view--ensure-workspace-list)
 
-EXPECTED OUTPUT / ACTION:
-  Loads workspace list if available; does nothing otherwise."
-  (unless (boundp 'project-view/workspace-list)
-    (ignore-errors
-      (when (fboundp 'project-view/load-workspace-directories)
-        (project-view/load-workspace-directories)))))
+
+(defun project-view--discover-projects-under (dir &optional max-depth)
+  "Recursively find Git project roots under DIR (up to MAX-DEPTH levels deep).
+Returns a list of absolute project directory paths that contain a .git/ subdirectory.
+This is used as the primary source of projects so that workspace grouping always works,
+independent of whether `project--list' has been populated."
+  (let ((projects nil)
+        (max-depth (or max-depth 5))
+        (entries (directory-files dir t "^[^.]" t)))  ; skip dotfiles/dirs for speed
+    (dolist (entry entries)
+      (when (file-directory-p entry)
+        (if (file-directory-p (expand-file-name ".git" entry))
+            (push entry projects)
+          (when (> max-depth 1)
+            (setq projects
+                  (append projects
+                          (project-view--discover-projects-under entry (1- max-depth))))))))
+    projects))
 
 (defun project-view--find-matching-workspace (proj-canon workspace-pairs)
   "Return the most specific matching workspace for PROJ-CANON or nil.
+Uses multiple normalization strategies to handle ~ vs /home/simon, symlinks,
+trailing slashes, etc."
+  (when project-view-debug
+    (message "project-view: proj-canon = %s" proj-canon)
+    (message "project-view: workspace-pairs = %S" workspace-pairs))
 
-INPUT VARIABLES:
-  PROJ-CANON (string) - Canonical project path.
-  WORKSPACE-PAIRS (list) - Sorted list of (orig . canon) workspace pairs.
-
-EXPECTED OUTPUT / ACTION:
-  Returns matching workspace original name or nil."
-  (let ((matched-ws nil))
-    (dolist (ws-pair workspace-pairs matched-ws)                                  ; most-specific-first order guarantees early exit
-      (when (file-in-directory-p proj-canon (cdr ws-pair))
-        (setq matched-ws (car ws-pair))
-        (cl-return)))))                                                           ; early exit for efficiency
+  (let ((matched-ws nil)
+        (proj-variants (list proj-canon
+                             (file-truename proj-canon)
+                             (expand-file-name proj-canon)
+                             (abbreviate-file-name proj-canon))))
+    (dolist (ws-pair workspace-pairs matched-ws)
+      (let ((ws-canon (cdr ws-pair)))
+        (when (cl-some (lambda (p)
+                         (when project-view-debug
+                           (message "base comparison\n---------------")
+                           (message "project-view: p = %s" p)
+                           (message "project-view: ws-canon = %s" ws-canon))
+                         (file-in-directory-p p ws-canon))
+                       proj-variants)
+          (setq matched-ws (car ws-pair))
+          (when project-view-debug
+            (message "project-view:   MATCHED proj=%s -> ws=%s"
+                     (file-name-nondirectory (directory-file-name proj-canon))
+                     (file-name-nondirectory (directory-file-name (car ws-pair)))))
+          (cl-return))))
+    (unless matched-ws
+      (when project-view-debug
+        (message "project-view:   NO MATCH for proj=%s (tried %d ws)"
+                 (file-name-nondirectory (directory-file-name proj-canon))
+                 (length workspace-pairs))))
+    matched-ws))
 
 (defun project-view--build-project-groups (project-pairs workspace-pairs)
   "Group PROJECT-PAIRS by WORKSPACE-PAIRS and return groups + ungrouped.
@@ -268,16 +319,22 @@ INPUT VARIABLES:
 EXPECTED OUTPUT / ACTION:
   Returns (project-groups-hash . ungrouped-list)."
   (let ((project-groups (make-hash-table :test 'equal))                           ; hash for O(1) workspace lookup
-        (ungrouped-projects nil))
+        (ungrouped-projects nil)
+        (matched-count 0))
     (dolist (proj-pair project-pairs)
-      (let* ((proj-canon (cdr proj-pair))                                         ; bind first to avoid void-variable
+      (let* ((proj-canon (cdr proj-pair))
              (matched-ws (project-view--find-matching-workspace
                           proj-canon workspace-pairs)))
         (if matched-ws
-            (puthash matched-ws
-                     (cons proj-pair (gethash matched-ws project-groups))
-                     project-groups)
-          (push proj-pair ungrouped-projects))))                                  ; push is more idiomatic than setq+cons
+            (progn
+              (setq matched-count (1+ matched-count))
+              (puthash matched-ws
+                       (cons proj-pair (gethash matched-ws project-groups))
+                       project-groups))
+          (push proj-pair ungrouped-projects))))
+    (message "project-view: === GROUPING SUMMARY ===")
+    (message "project-view: Matched: %d / %d projects" matched-count (length project-pairs))
+    (message "project-view: Ungrouped: %d" (length ungrouped-projects))
     (cons project-groups ungrouped-projects)))
 
 (defun project-view--sort-groups (project-groups ungrouped-projects)
@@ -308,15 +365,21 @@ INPUT VARIABLES:
 
 EXPECTED OUTPUT / ACTION:
   Returns (project-groups-hash . ungrouped-projects-list)."
-  (when project-view-debug
-    (message "project-view: get-grouped-projects START"))
+  (message "project-view: get-grouped-projects START (workspaces bound=%s)"
+           (boundp 'project-view/workspace-list))
   (project-view--ensure-workspace-list)
   (let* ((workspaces-orig (when (and (boundp 'project-view/workspace-list)
                                      (listp project-view/workspace-list))
                             (mapcar #'car project-view/workspace-list)))
-         (projects-orig (when (and (boundp 'project--list)
-                                   (listp project--list))
-                          (mapcar #'car project--list)))
+         ;; Primary source: `project--list' (your preference). Fallback to
+         ;; on-disk discovery only if `project--list' is empty.
+         (projects-orig (or (when (and (boundp 'project--list)
+                                       (listp project--list))
+                              (mapcar #'car project--list))
+                            (apply #'append
+                                   (mapcar (lambda (ws-dir)
+                                             (project-view--discover-projects-under ws-dir 5))
+                                           (or workspaces-orig '())))))
          (workspace-pairs (sort (project-view--get-canonical-pairs
                                  (or workspaces-orig '()))
                                 (lambda (a b)
@@ -327,9 +390,17 @@ EXPECTED OUTPUT / ACTION:
                    project-pairs workspace-pairs))
          (project-groups (car grouped))
          (ungrouped-projects (cdr grouped)))
-    (when project-view-debug
-      (message "project-view: Found %d workspaces and %d projects"
-               (length workspaces-orig) (length projects-orig)))
+    ;; Unconditional detailed diagnostics (no need to set project-view-debug)
+    (message "project-view: === WORKSPACES ===")
+    (message "project-view: workspaces-orig: %S" workspaces-orig)
+    (message "project-view: workspace-pairs (first 3): %S" (seq-take workspace-pairs 3))
+    (message "project-view: === PROJECTS (first 8) ===")
+    (message "project-view: projects-orig (first 8): %S" (seq-take projects-orig 8))
+    (message "project-view: Found %d workspaces and %d projects total"
+             (length workspaces-orig) (length projects-orig))
+    (message "project-view: ungrouped count: %d, grouped keys: %S"
+             (length ungrouped-projects)
+             (hash-table-keys project-groups))
     (project-view--sort-groups project-groups ungrouped-projects)))
 
 (defun project-view/git-repo-info (DIR)
@@ -411,14 +482,13 @@ EXPECTED OUTPUT / ACTION:
   (let ((info (plist-get ROW :info))
         (col-name (vtable-column VTABLE COLUMN)))
     (pcase col-name
-      ("Workspace"
-       (propertize (or (plist-get ROW :workspace-name) "Other")
-                   'face 'vc-state-base))
-      ("Path"
-       (propertize (format "  %s" (project-view/format-path
-                                   (plist-get ROW :original)))
-                   'face 'vc-state-base
-                   'mouse-face 'embark-target))
+      ("Project"
+       (let* ((ws (or (plist-get ROW :workspace-name) "Other"))
+              (orig (plist-get ROW :original))
+              (proj-name (file-name-nondirectory (directory-file-name orig)))
+              (display (project-view/format-project-display ws proj-name)))
+         (propertize display 'face 'vc-state-base
+                     'mouse-face 'embark-target)))
       ("Branch"
        (propertize (if info (or (plist-get info :branch) "no commits") "-")
                    'face 'vc-state-base))
@@ -466,7 +536,6 @@ EXPECTED OUTPUT / ACTION:
 (define-derived-mode project-view-mode special-mode "Project View"
   "Major mode for the *Project View* buffer."
   :group 'project-view
-  (buffer-face-set '(:family "Source Code Pro" :height 100 :weight regular))
   (setq header-line-format (propertize " Project View" 'face 'vc-state-base))
   (setq buffer-read-only t)
   (setq truncate-lines t))
@@ -482,7 +551,11 @@ EXPECTED OUTPUT / ACTION:
   Creates or refreshes `*Project View*' buffer with grouped project table."
   (interactive)
   (message "project-view DEBUG: project-view command START")
-  (let* ((grouped (project-view/get-grouped-projects))
+  (let* ((grouped (condition-case err
+                      (project-view/get-grouped-projects)
+                    (error
+                     (message "project-view ERROR in get-grouped-projects: %S" err)
+                     (cons (make-hash-table :test 'equal) nil))))
          (project-groups (car grouped))
          (ungrouped-projects (cdr grouped))
          (all-rows nil))
@@ -506,7 +579,8 @@ EXPECTED OUTPUT / ACTION:
              :getter #'project-view--vtable-getter
              :use-header-line t
              :actions '("RET" project-view--switch-to-project
-                        "<mouse-1>" project-view--switch-to-project)))
+                        "<double-mouse-1>" project-view--switch-to-project)))
+
         (let ((inhibit-read-only t))
           (insert (propertize "\n  No projects found.\n\n" 'face 'warning)
                   "Run M-x project-view/scan-workspaces first.\n")))
