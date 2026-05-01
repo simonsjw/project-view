@@ -24,6 +24,7 @@
 
 (require 'vtable)
 (require 'cl-lib)
+(require 'seq)
 (require 'vc)
 (require 'vc-git)
 (require 'project)
@@ -58,8 +59,15 @@ This variable may be set by the user before this package is loaded
   :type 'string
   :group 'project-view)
 
-(defvar project-view-debug nil
-  "When non-nil, enable extra debug messages in `project-view' functions.")
+(defcustom project-view-debug nil
+  "When non-nil, enable extra diagnostic messages in `project-view' functions."
+  :type 'boolean
+  :group 'project-view)
+
+(defvar project-view/workspace-list nil
+  "List of workspace root directories.
+Each element is a one-element list containing the absolute directory path,
+in the same format used by `project--list'.")
 
 (defvar project-view/column-widths
   '(:project 48 :branch 15 :status 8 :upstream 18
@@ -157,14 +165,32 @@ The file uses Emacs' project list format."
     (insert (format "%S" project-view/workspace-list))))
 
 (defun project-view/add-workspace-directory (dir)
-  "Add DIR as a project directory in Emacs' expected format."
+  "Add DIR as a project directory in Emacs' expected format.
+
+Prevent adding a workspace that is nested inside an existing workspace
+directory (checked via canonical paths to handle symlinks, ~, etc.)."
   (interactive "DDirectory: ")
-  (let ((expanded-dir (expand-file-name dir)))
-    (unless (member (list expanded-dir) project-view/workspace-list)
-      (setq project-view/workspace-list
-            (append project-view/workspace-list (list (list expanded-dir)))))
-    (project-view/save-workspace-directories)
-    (message "Added workspace directory: %s" expanded-dir)))
+  (project-view--ensure-workspace-list)
+  (let* ((expanded-dir (expand-file-name dir))
+         (existing-parent-ws
+          (cl-find-if
+           (lambda (ws)
+             (let* ((ws-orig (car ws))
+                    (ws-canon (file-truename (expand-file-name ws-orig)))
+                    (dir-canon (file-truename expanded-dir)))
+               (and (not (string= dir-canon ws-canon))
+                    (file-in-directory-p dir-canon ws-canon))))
+           project-view/workspace-list)))
+    (if existing-parent-ws
+        (let ((ws-name (file-name-nondirectory
+                        (directory-file-name (car existing-parent-ws)))))
+          (message "You are attempting to set up a workspace inside existing %s. This is not supported by project-view. Please create workspaces outside of any existing ones."
+                   ws-name))
+      (unless (member (list expanded-dir) project-view/workspace-list)
+        (setq project-view/workspace-list
+              (append project-view/workspace-list (list (list expanded-dir))))
+        (project-view/save-workspace-directories)
+        (message "Added workspace directory: %s" expanded-dir)))))
 
 (defun project-view/remove-workspace-directory (dir)
   "Remove DIR from `project-view/workspace-list'."
@@ -182,48 +208,26 @@ The file uses Emacs' project list format."
 ;; Here we have the code directly used in implementing the consolidated view
 ;; of projects by the work-space that contains them.
 
-(defun project-view/format-path (PATH)
-  "Format PATH for display with truncation if necessary.
+(defun project-view/format-path (path)
+  "Format PATH for display using the core `truncate-string-to-width' function.
+This replaces the previous custom substring logic with an Emacs built-in."
+  (truncate-string-to-width path project-view/format-max-path-length
+                            nil nil "..."))
 
-INPUT VARIABLES:
-  PATH (string) - Absolute or relative path to a project directory.
+(defun project-view/format-remote (remote)
+  "Format REMOTE URL for display using the core `truncate-string-to-width' function.
+Special-case strings like \"no remote\" are returned unchanged."
+  (if (string-match-p "^\\(no remote\\|none\\|N/A\\)$" remote)
+      remote
+    (truncate-string-to-width remote project-view/format-max-remote-length
+                              nil nil "...")))
 
-EXPECTED OUTPUT / ACTION:
-  Returns a possibly truncated string suitable for the Path column."
-  (let ((l (length PATH)))                                                        ; compute length once for efficiency
-    (if (<= l project-view/format-max-path-length)
-        PATH
-      (concat (substring PATH 0 20) " ... " (substring PATH (- l 35) l)))))
-
-(defun project-view/format-remote (REMOTE)
-  "Format REMOTE URL for display with truncation if necessary.
-
-INPUT VARIABLES:
-  REMOTE (string) - URL or description of the Git remote.
-
-EXPECTED OUTPUT / ACTION:
-  Returns a possibly truncated string suitable for the Remote column."
-  (if (string-match-p "^\\(no remote\\|none\\|N/A\\)$" REMOTE)
-      REMOTE
-    (let ((l (length REMOTE)))                                                    ; reuse length for truncation logic
-      (if (<= l project-view/format-max-remote-length)
-          REMOTE
-        (concat (substring REMOTE 0 20) "..." (substring REMOTE (- l 35) l))))))
-
-(defun project-view/format-project-display (WS PROJ-NAME)
-  "Format WS: PROJ-NAME for the Project column, with truncation if necessary.
-
-INPUT VARIABLES:
-  WS (string) - Workspace basename (e.g. \"workspace\" or \"Other\").
-  PROJ-NAME (string) - Project folder name.
-
-EXPECTED OUTPUT / ACTION:
-  Returns a possibly truncated string suitable for the Project column."
-  (let* ((s (format "%s: %s" WS PROJ-NAME))
-         (max project-view/format-max-path-length))
-    (if (<= (length s) max)
-        s
-      (concat (substring s 0 18) " … " (substring s (- (length s) 35))))))
+(defun project-view/format-project-display (ws proj-name)
+  "Format WS: PROJ-NAME for the Project column using `truncate-string-to-width'.
+This provides consistent truncation with the rest of the display."
+  (let ((s (format "%s: %s" ws proj-name)))
+    (truncate-string-to-width s project-view/format-max-path-length
+                              nil nil "...")))
 
 (defun project-view--get-canonical-pairs (DIRS)
   "Return list of (original . canonical) pairs for DIRS.
@@ -332,9 +336,10 @@ EXPECTED OUTPUT / ACTION:
                        (cons proj-pair (gethash matched-ws project-groups))
                        project-groups))
           (push proj-pair ungrouped-projects))))
-    (message "project-view: === GROUPING SUMMARY ===")
-    (message "project-view: Matched: %d / %d projects" matched-count (length project-pairs))
-    (message "project-view: Ungrouped: %d" (length ungrouped-projects))
+    (when project-view-debug
+      (message "project-view: === GROUPING SUMMARY ===")
+      (message "project-view: Matched: %d / %d projects" matched-count (length project-pairs))
+      (message "project-view: Ungrouped: %d" (length ungrouped-projects)))
     (cons project-groups ungrouped-projects)))
 
 (defun project-view--sort-groups (project-groups ungrouped-projects)
@@ -365,8 +370,9 @@ INPUT VARIABLES:
 
 EXPECTED OUTPUT / ACTION:
   Returns (project-groups-hash . ungrouped-projects-list)."
-  (message "project-view: get-grouped-projects START (workspaces bound=%s)"
-           (boundp 'project-view/workspace-list))
+  (when project-view-debug
+    (message "project-view: get-grouped-projects START (workspaces bound=%s)"
+             (boundp 'project-view/workspace-list)))
   (project-view--ensure-workspace-list)
   (let* ((workspaces-orig (when (and (boundp 'project-view/workspace-list)
                                      (listp project-view/workspace-list))
@@ -390,17 +396,17 @@ EXPECTED OUTPUT / ACTION:
                    project-pairs workspace-pairs))
          (project-groups (car grouped))
          (ungrouped-projects (cdr grouped)))
-    ;; Unconditional detailed diagnostics (no need to set project-view-debug)
-    (message "project-view: === WORKSPACES ===")
-    (message "project-view: workspaces-orig: %S" workspaces-orig)
-    (message "project-view: workspace-pairs (first 3): %S" (seq-take workspace-pairs 3))
-    (message "project-view: === PROJECTS (first 8) ===")
-    (message "project-view: projects-orig (first 8): %S" (seq-take projects-orig 8))
-    (message "project-view: Found %d workspaces and %d projects total"
-             (length workspaces-orig) (length projects-orig))
-    (message "project-view: ungrouped count: %d, grouped keys: %S"
-             (length ungrouped-projects)
-             (hash-table-keys project-groups))
+    (when project-view-debug
+      (message "project-view: === WORKSPACES ===")
+      (message "project-view: workspaces-orig: %S" workspaces-orig)
+      (message "project-view: workspace-pairs (first 3): %S" (seq-take workspace-pairs 3))
+      (message "project-view: === PROJECTS (first 8) ===")
+      (message "project-view: projects-orig (first 8): %S" (seq-take projects-orig 8))
+      (message "project-view: Found %d workspaces and %d projects total"
+               (length workspaces-orig) (length projects-orig))
+      (message "project-view: ungrouped count: %d, grouped keys: %S"
+               (length ungrouped-projects)
+               (hash-table-keys project-groups)))
     (project-view--sort-groups project-groups ungrouped-projects)))
 
 (defun project-view/git-repo-info (DIR)
@@ -550,7 +556,8 @@ INPUT VARIABLES:
 EXPECTED OUTPUT / ACTION:
   Creates or refreshes `*Project View*' buffer with grouped project table."
   (interactive)
-  (message "project-view DEBUG: project-view command START")
+  (when project-view-debug
+    (message "project-view DEBUG: project-view command START"))
   (let* ((grouped (condition-case err
                       (project-view/get-grouped-projects)
                     (error
