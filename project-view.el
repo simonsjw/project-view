@@ -5,7 +5,7 @@
 
 ;; Author: Simon Watson (with assistance from Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 1.1
+;; Version: 1.1.1
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -313,16 +313,43 @@ the workspace is shown as `workspace: my_project'."
     (truncate-string-to-width display project-view/format-max-path-length
                               nil nil "...")))
 
+(defun project-view--canonical-dir (DIR)
+  "Return DIR as an absolute, symlink-resolved directory path.
+
+DIR is a directory string.  The result has no trailing slash, so
+`/home/user/proj', `/home/user/proj/' and `~/proj' compare equal
+after canonicalisation."
+  (directory-file-name (file-truename (expand-file-name DIR))))
+
+(defun project-view--unique-dirs (DIRS)
+  "Return DIRS with duplicates removed by canonical path.
+
+DIRS is a list of directory strings.  The first occurrence of each
+canonical path is kept so that `project--list' spellings such as
+`~/proj' and `/home/user/proj/' do not become two table rows."
+  (let ((seen (make-hash-table :test #'equal))
+        (unique nil))
+    (dolist (dir DIRS)
+      (when (and (stringp dir)
+                 (file-directory-p (expand-file-name dir)))
+        (let ((canon (project-view--canonical-dir dir)))
+          (unless (gethash canon seen)
+            (puthash canon t seen)
+            (push dir unique)))))
+    (nreverse unique)))
+
 (defun project-view--get-canonical-pairs (DIRS)
   "Return list of (original . canonical) pairs for DIRS.
 
 DIRS is a list of directory strings.  Each canonical path is an
-absolute, symlink-resolved directory name with a trailing slash."
+absolute, symlink-resolved directory name with a trailing slash.
+Duplicate originals that collapse to the same canonical path are
+dropped."
   (mapcar (lambda (orig)
             (cons orig
                   (file-name-as-directory
-                   (file-truename (expand-file-name orig)))))
-          DIRS))
+                   (project-view--canonical-dir orig))))
+          (project-view--unique-dirs DIRS)))
 
 (defun project-view--ensure-workspace-list ()
   "Ensure `project-view/workspace-list' is loaded from the persistent file.
@@ -514,19 +541,31 @@ Return (sorted-groups-hash . sorted-ungrouped-list)."
   "Collect and filter candidate project directories.
 
 WORKSPACES-ORIG is a list of original workspace directory strings.
-Prefer `project--list' when it is populated, then fall back to on-disk
-discovery under each workspace.  Every candidate is then filtered so
-that only outermost Git repositories remain."
-  (let* ((from-list (when (and (boundp 'project--list)
-                               (listp project--list))
-                      (mapcar #'car project--list)))
-         (from-disk (apply #'append
-                           (mapcar (lambda (ws-dir)
-                                     (project-view--discover-projects-under
-                                      ws-dir project-view/discover-max-depth))
-                                   (or WORKSPACES-ORIG '()))))
-         (merged (delete-dups (append (or from-list '()) from-disk))))
-    (seq-filter #'project-view--outermost-git-project-p merged)))
+Prefer qualifying entries from `project--list'.  Fall back to on-disk
+discovery under each workspace only when that list contributes
+nothing.  Candidates are then restricted to outermost Git repositories
+and deduplicated by canonical path.
+
+Appending both sources without canonical comparison is what produced
+duplicate rows: `project--list' typically stores a path such as
+`/home/user/ws/proj/' while discovery returns the truename without a
+trailing slash, so `delete-dups' treated them as distinct."
+  (let* ((from-list (seq-filter
+                     #'project-view--outermost-git-project-p
+                     (or (when (and (boundp 'project--list)
+                                    (listp project--list))
+                           (mapcar #'car project--list))
+                         '())))
+         (from-disk (when (null from-list)
+                      (apply #'append
+                             (mapcar (lambda (ws-dir)
+                                       (project-view--discover-projects-under
+                                        ws-dir
+                                        project-view/discover-max-depth))
+                                     (or WORKSPACES-ORIG '())))))
+         (merged (append from-list (or from-disk '()))))
+    (project-view--unique-dirs
+     (seq-filter #'project-view--outermost-git-project-p merged))))
 
 (defun project-view/get-grouped-projects ()
   "Group all known outermost Git projects by workspace.
