@@ -26,19 +26,23 @@ DIR is a canonical project root."
             (nconc project-view--refresh-queue (list canon))))
     (project-view--maybe-start-refresh)))
 
+(defun project-view--refresh-busy-p ()
+  "Return non-nil when a porcelain worker is actually alive."
+  (and (processp project-view--refresh-running)
+       (process-live-p project-view--refresh-running)))
+
 (defun project-view--maybe-start-refresh ()
   "Start a porcelain process for the next queued root if idle."
-  (when (and (not project-view--refresh-running)
+  (when (and (not (project-view--refresh-busy-p))
              project-view--refresh-queue)
+    (setq project-view--refresh-running nil)
     (let ((dir (pop project-view--refresh-queue)))
       (if (and (stringp dir) (file-directory-p dir))
           (project-view--start-refresh-process dir)
         (project-view--maybe-start-refresh)))))
 
 (defun project-view--start-refresh-process (DIR)
-  "Run porcelain v2 asynchronously for DIR.
-
-DIR is a canonical project root."
+  "Run porcelain v2 asynchronously for DIR."
   (let* ((untracked (if project-view/include-untracked "normal" "no"))
          (buf (generate-new-buffer " *project-view-git*"))
          (proc (make-process
@@ -46,15 +50,19 @@ DIR is a canonical project root."
                 :buffer buf
                 :noquery t
                 :connection-type 'pipe
+                :sentinel #'project-view--refresh-sentinel
                 :command (list "git" "-C" DIR
                                "--no-optional-locks"
                                "status" "--porcelain=v2"
                                "--branch" "--show-stash"
                                "--ignore-submodules=dirty"
                                (concat "--untracked-files=" untracked)))))
-    (setq project-view--refresh-running proc)
     (process-put proc 'project-view-dir DIR)
-    (set-process-sentinel proc #'project-view--refresh-sentinel)))
+    (setq project-view--refresh-running proc)
+    ;; Fast git can exit before Lisp continues.  Reap it now.
+    (unless (process-live-p proc)
+      (project-view--refresh-sentinel proc "finished\n"))))
+
 
 (defun project-view--refresh-sentinel (PROC _EVENT)
   "Handle completion of porcelain process PROC.

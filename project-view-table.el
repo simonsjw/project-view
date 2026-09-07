@@ -103,20 +103,80 @@ ROW is the selected vtable row plist."
   "g" #'project-view-refresh
   "G" #'project-view-refresh)
 
-(defun project-view--refresh-visible-row (DIR INFO)
-  "Update the visible table row for DIR with INFO.
+(defun project-view--find-table ()
+  "Return the vtable in `*Project View*', or nil.
 
-DIR is a project root.  INFO is a Git info plist.  No-op when the
-view buffer is not alive."
+Does not depend on point.  `vtable-current-table' only works when
+point is on a row, which is not true from a process sentinel."
   (when-let ((buf (get-buffer project-view/buffer-name)))
     (with-current-buffer buf
-      (when-let ((table (ignore-errors (vtable-current-table))))
+      (or (and (fboundp 'vtable-current-table)
+               (save-excursion
+                 (goto-char (point-min))
+                 (ignore-errors (vtable-current-table))))
+          (save-excursion
+            (goto-char (point-min))
+            (text-property-search-forward 'vtable)
+            (get-text-property (point) 'vtable))))))
+
+(defun project-view--redraw-table ()
+  "Rebuild `*Project View*' from the cache without wiping it.
+
+Preserves point as a line/column pair.  Called from a short timer so
+a burst of porcelain sentinels becomes one repaint."
+  (setq project-view--redraw-timer nil)
+  (when-let ((buf (get-buffer project-view/buffer-name)))
+    (let ((redraw
+           (lambda ()
+             (let ((inhibit-read-only t)
+                   (line (line-number-at-pos))
+                   (col (current-column))
+                   (rows (project-view--build-rows)))
+               (erase-buffer)
+               (if rows
+                   (make-vtable
+                    :columns project-view/vtable-columns
+                    :objects rows
+                    :getter #'project-view--vtable-getter
+                    :face 'project-view-face
+                    :use-header-line t
+                    :keymap project-view-mode-map
+                    :actions '("RET" project-view--switch-to-project
+                               "<double-mouse-1>" project-view--switch-to-project))
+                 (insert (propertize "\n  No Git projects found.\n\n" 'face 'warning)))
+               (goto-char (point-min))
+               (forward-line (1- line))
+               (move-to-column col)))))
+      (if-let ((win (get-buffer-window buf t)))
+          (with-selected-window win
+            (funcall redraw))
+        (with-current-buffer buf
+          (funcall redraw))))))
+
+(defun project-view--schedule-table-redraw ()
+  "Rebuild the visible table on a short timer."
+  (unless project-view--redraw-timer
+    (setq project-view--redraw-timer
+          (run-with-timer 0.15 nil #'project-view--redraw-table))))
+
+(defun project-view--refresh-visible-row (DIR INFO)
+  "Apply INFO to the row for DIR and schedule a table rebuild.
+
+DIR is a project root.  INFO is a Git info plist.  The objects list
+is updated immediately so a later rebuild cannot miss this row.
+Display is deferred: `vtable-update-object' from a process sentinel
+fails unless the table is under point in a visible window of the
+same width, and that error was previously swallowed."
+  (when-let ((buf (get-buffer project-view/buffer-name)))
+    (with-current-buffer buf
+      (when-let ((table (project-view--find-table)))
         (dolist (row (vtable-objects table))
           (when (equal (project-view--canonical-dir
                         (plist-get row :canonical))
                        (project-view--canonical-dir DIR))
-            (plist-put row :info INFO)
-            (ignore-errors (vtable-update-object table row row))))))))
+            (plist-put row :info INFO)))))
+    (project-view--schedule-table-redraw)))
+
 
 (define-derived-mode project-view-mode special-mode "Project View"
   "Major mode for the *Project View* buffer.

@@ -16,6 +16,9 @@
   :group 'projects
   :prefix "project-view-")
 
+(defvar project-view--redraw-timer nil
+  "Idle timer used to rebuild `*Project View*' after cache updates.")
+
 (defcustom project-view/format-max-path-length 72
   "Maximum length for path display before truncation."
   :type 'integer
