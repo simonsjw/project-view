@@ -5,7 +5,7 @@
 
 ;; Author: Simon Watson (with assistance from Grok)
 ;; Keywords: projects, vc, convenience
-;; Version: 1.2
+;; Version: 1.3
 ;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
@@ -16,7 +16,9 @@
 ;; `*Project View*', grouped by `project-view/workspace-list'.
 ;;
 ;; A directory is a project only when it contains a `.git' entry and no
-;; ancestor directory is already a Git repository.
+;; ancestor directory is already a Git repository.  Roots written into
+;; `project--list' use `project-current' and the abbreviated
+;; trailing-slash form `project.el' persists.
 ;;
 ;; Git columns are served from a cache in `user-emacs-directory'
 ;; (`project-view-cache.el').  Fresh records are those whose stored

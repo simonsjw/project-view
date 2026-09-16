@@ -49,8 +49,9 @@ Keep the directory that contains these files on `load-path`, then `(require 'pro
 ```
 
 1. `M-x project-view/add-workspace-directory` to register workspace roots.
-2. `M-x project-view/scan-workspaces` to remember outermost Git repositories.
-3. `M-x project-view` to open the table.
+2. `M-x project-view/dedupe-project-list` once to collapse existing `~/proj` vs `~/proj/` entries.
+3. `M-x project-view/scan-workspaces` to remember outermost Git repositories.
+4. `M-x project-view` to open the table.
 
 `g` in `*Project View*` queues a porcelain refresh for every row. Set `project-view-debug` for traces.
 
@@ -82,12 +83,14 @@ Set `project-view/include-untracked` to `nil` if untracked walks dominate status
 
 `project-remember-projects-under` is not used. Discovery records a directory only when it contains a `.git` entry (directory or file), no ancestor has a `.git`, and the walk does not descend into a Git root. The same predicate filters `project--list` when the table is built. Depth is `project-view/discover-max-depth` (default 8).
 
+Roots written to `project-list-file` use `project.el`'s own spelling: `file-name-as-directory` of `abbreviate-file-name`, with no forced truename. `scan-workspaces` drops equivalent spellings (`~/proj` vs `~/proj/`) before `project-remember-project`. `M-x project-view/dedupe-project-list` rewrites an already-duplicated file.
+
 ---
 
 ## Integration notes
 
 - `project--list` is the primary project source, filtered to outermost Git roots and deduplicated by canonical path. On-disk discovery runs only when that list is empty.
-- `project-remember-project` is called by `scan-workspaces` with `(vc Git DIR)`.
+- `project-remember-project` is called by `scan-workspaces` with the object `project-current` builds, not a hand-made `(vc Git DIR)`.
 - Status colours still use `vc-state-base`, `vc-up-to-date-state`, `vc-needs-update-state`, and friends, composed with `project-view-face`.
 - Git data comes from `git --no-optional-locks status --porcelain=v2 --branch --show-stash`, not from six `vc-git--run-command-string` calls. `remote.origin.url` is read from config only when the cache has no URL yet.
 

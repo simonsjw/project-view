@@ -11,7 +11,9 @@
 ;;
 ;; Persistence uses the same lisp-data convention as `project-list-file',
 ;; written to `project-view/workspace-list-file' under
-;; `user-emacs-directory'.
+;; `user-emacs-directory'.  Stored paths are the internal identity
+;; form from `project-view--canonical-dir' so interactive `D' slashes
+;; and `~' spellings do not create a second workspace entry.
 
 ;;; Code:
 
@@ -22,7 +24,10 @@
 (defun project-view/load-workspace-directories ()
   "Load `project-view/workspace-list' from the stored file.
 
-A missing or invalid file leaves the variable unchanged."
+A missing or invalid file leaves the variable unchanged.  Each
+surviving entry is rewritten with `project-view--canonical-dir'
+so slash and `~' variants collapse the next time the file is
+saved."
   (let ((workspaces-file project-view/workspace-list-file))
     (when (file-exists-p workspaces-file)
       (condition-case err
@@ -31,9 +36,32 @@ A missing or invalid file leaves the variable unchanged."
                    (insert-file-contents workspaces-file)
                    (read (current-buffer)))))
             (when (listp workspaces-list)
-              (setq project-view/workspace-list workspaces-list)))
+              (let ((normalized (project-view--normalize-workspace-list
+                                 workspaces-list)))
+                (setq project-view/workspace-list normalized)
+                (unless (equal normalized workspaces-list)
+                  (project-view/save-workspace-directories)))))
         (error
          (message "project-view: Failed to load workspace-list.el: %S" err))))))
+
+(defun project-view--normalize-workspace-list (ENTRIES)
+  "Return ENTRIES with each directory rewritten as an identity key.
+
+ENTRIES is a list of one-element directory lists.  Duplicates
+that collapse under `project-view--canonical-dir' are dropped.
+Entries that are not readable directories are kept verbatim so a
+missing path is not silently deleted."
+  (let ((seen (make-hash-table :test #'equal))
+        (normalized nil))
+    (dolist (ent ENTRIES)
+      (let ((dir (car-safe ent)))
+        (if (not (and (stringp dir) (file-directory-p dir)))
+            (push ent normalized)
+          (let ((canon (project-view--canonical-dir dir)))
+            (unless (gethash canon seen)
+              (puthash canon t seen)
+              (push (list canon) normalized))))))
+    (nreverse normalized)))
 
 (defun project-view/save-workspace-directories ()
   "Save the current value of `project-view/workspace-list' to file.
@@ -60,43 +88,58 @@ and manual edits to the file are picked up reliably."
 (defun project-view/add-workspace-directory (DIR)
   "Add DIR as a workspace directory in Emacs' expected format.
 
-DIR is the directory chosen interactively or passed from Lisp.  Refuse
-to add a workspace that is nested inside an existing workspace directory
-(checked via canonical paths to handle symlinks, `~', and trailing
-slashes)."
+DIR is the directory chosen interactively or passed from Lisp.
+It is stored as `project-view--canonical-dir' so a path typed
+with a trailing slash does not become a second entry.  Refuse to
+add a workspace that is nested inside an existing workspace
+directory (checked via canonical paths to handle symlinks, `~',
+and trailing slashes)."
   (interactive "DDirectory: ")
   (project-view--ensure-workspace-list)
-  (let* ((expanded-dir (expand-file-name DIR))
+  (let* ((normalized (project-view--canonical-dir DIR))
          (existing-parent-ws
           (cl-find-if
            (lambda (ws)
-             (let* ((ws-canon (project-view--canonical-dir (car ws)))
-                    (dir-canon (project-view--canonical-dir expanded-dir)))
-               (and (not (string= dir-canon ws-canon))
-                    (file-in-directory-p dir-canon ws-canon))))
+             (let ((ws-canon (project-view--canonical-dir (car ws))))
+               (and (not (string= normalized ws-canon))
+                    (file-in-directory-p
+                     normalized
+                     (file-name-as-directory ws-canon)))))
            project-view/workspace-list)))
-    (if existing-parent-ws
-        (let ((ws-name (file-name-nondirectory
-                        (directory-file-name (car existing-parent-ws)))))
-          (message "You are attempting to set up a workspace inside existing %s. This is not supported by project-view. Please create workspaces outside of any existing ones."
-                   ws-name))
-      (unless (member (list expanded-dir) project-view/workspace-list)
-        (setq project-view/workspace-list
-              (append project-view/workspace-list (list (list expanded-dir))))
-        (project-view/save-workspace-directories)
-        (message "Added workspace directory: %s" expanded-dir)))))
+    (cond
+     (existing-parent-ws
+      (let ((ws-name (file-name-nondirectory
+                      (directory-file-name (car existing-parent-ws)))))
+        (message "You are attempting to set up a workspace inside existing %s. This is not supported by project-view. Please create workspaces outside of any existing ones."
+                 ws-name)))
+     ((cl-some (lambda (ws)
+                 (project-view--same-project-root-p (car ws) normalized))
+               project-view/workspace-list)
+      (message "Workspace directory already registered: %s" normalized))
+     (t
+      (setq project-view/workspace-list
+            (append project-view/workspace-list (list (list normalized))))
+      (project-view/save-workspace-directories)
+      (message "Added workspace directory: %s" normalized)))))
 
 (defun project-view/remove-workspace-directory (DIR)
   "Remove DIR from `project-view/workspace-list'.
 
-DIR is the directory path to remove.  The persistent workspace file is
-updated immediately."
+DIR is the directory path to remove.  Any stored spelling that
+names the same directory is dropped.  The persistent workspace
+file is updated immediately."
   (interactive "sDirectory to remove: ")
-  (let ((expanded-dir (expand-file-name DIR)))
+  (project-view--ensure-workspace-list)
+  (let ((before (length project-view/workspace-list)))
     (setq project-view/workspace-list
-          (remove (list expanded-dir) project-view/workspace-list))
+          (cl-remove-if
+           (lambda (ws)
+             (project-view--same-project-root-p (car ws) DIR))
+           project-view/workspace-list))
     (project-view/save-workspace-directories)
-    (message "Removed workspace directory: %s" expanded-dir)))
+    (if (= before (length project-view/workspace-list))
+        (message "No workspace directory matched: %s" DIR)
+      (message "Removed workspace directory: %s" DIR))))
 
 (provide 'project-view-workspace)
 ;;; project-view-workspace.el ends here

@@ -5,8 +5,19 @@
 
 ;;; Commentary:
 
-;; Canonical path helpers and display formatters.  Duplicate rows are
-;; avoided by comparing `file-truename' results with no trailing slash.
+;; Two directory spellings are used on purpose:
+;;
+;; * `project-view--canonical-dir' is the internal identity key: an
+;;   absolute truename with no trailing slash.  Table rows, cache keys
+;;   and workspace membership all compare this form.
+;; * `project-view--project-list-root' is the string `project.el'
+;;   stores in `project--list': abbreviated, with a trailing slash,
+;;   and without forcing a truename.  Only that helper may write a
+;;   root into the official project list.
+;;
+;; `file-in-directory-p' requires its DIR argument to end in a slash,
+;; so grouping pairs add a slash to the identity key at that boundary
+;; only.
 
 ;;; Code:
 
@@ -19,6 +30,35 @@ DIR is a directory string.  The result has no trailing slash, so
 `/home/user/proj', `/home/user/proj/' and `~/proj' compare equal
 after canonicalisation."
   (directory-file-name (file-truename (expand-file-name DIR))))
+
+(defun project-view--project-list-root (DIR)
+  "Return DIR in the form `project.el' stores in `project--list'.
+
+DIR is a project directory.  Local roots are abbreviated and given
+a trailing slash, matching `project--read-project-list'.  Remote
+roots keep their own syntax and only receive a trailing slash.
+The result is not truenamed, because `project.el' does not resolve
+symlinks when remembering a project."
+  (let ((expanded (expand-file-name DIR)))
+    (if (file-remote-p expanded)
+        (file-name-as-directory expanded)
+      (file-name-as-directory (abbreviate-file-name expanded)))))
+
+(defun project-view--same-project-root-p (A B)
+  "Return non-nil if A and B name the same project directory.
+
+A and B are directory strings.  Prefer `file-equal-p' when both
+exist so trailing slashes, `~' and symlinks collapse.  Fall back
+to `project-view--canonical-dir' so two spellings of a missing
+directory can still be recognised."
+  (cond
+   ((not (and (stringp A) (stringp B))) nil)
+   ((and (file-exists-p A) (file-exists-p B))
+    (file-equal-p A B))
+   (t
+    (ignore-errors
+      (string= (project-view--canonical-dir A)
+               (project-view--canonical-dir B))))))
 
 (defun project-view--unique-dirs (DIRS)
   "Return DIRS with duplicates removed by canonical path.
@@ -38,12 +78,12 @@ canonical path is kept so that `project--list' spellings such as
     (nreverse unique)))
 
 (defun project-view--get-canonical-pairs (DIRS)
-  "Return list of (original . canonical) pairs for DIRS.
+  "Return list of (original . identity) pairs for DIRS.
 
-DIRS is a list of directory strings.  Each canonical path is an
-absolute, symlink-resolved directory name with a trailing slash.
-Duplicate originals that collapse to the same canonical path are
-dropped."
+DIRS is a list of directory strings.  The cdr is
+`project-view--canonical-dir' with a trailing slash so it can be
+handed to `file-in-directory-p'.  Duplicate originals that
+collapse to the same identity key are dropped."
   (mapcar (lambda (orig)
             (cons orig
                   (file-name-as-directory
